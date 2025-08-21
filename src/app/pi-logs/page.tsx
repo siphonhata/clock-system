@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -8,14 +7,15 @@ import { SidebarTrigger } from '@/components/ui/sidebar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Terminal } from 'lucide-react';
+import { Terminal, Wifi, WifiOff } from 'lucide-react';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export default function RealtimeLogsPage() {
   const [logs, setLogs] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
+  const [piConnected, setPiConnected] = React.useState<boolean>(true); // Track Pi connectivity
   const scrollAreaRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -26,46 +26,47 @@ export default function RealtimeLogsPage() {
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-    // Load existing logs
-    supabase
-      .from('logs')
-      .select('*')
-      .order('created_at', { ascending: true })
-      .then(res => {
-        if (res.error) {
-            setError(`Error fetching initial logs: ${res.error.message}`);
-        } else if (res.data) {
-            setLogs(res.data.map(l => l.message));
-        }
-      });
+    // Fetch initial logs
+    const fetchLogs = async () => {
+      const { data, error } = await supabase
+        .from('logs')
+        .select('message, created_at')
+        .order('created_at', { ascending: true });
 
-    // Subscribe to realtime changes
-    const subscription = supabase
+      if (error) setError(`Error fetching initial logs: ${error.message}`);
+      else if (data) setLogs(data.map(l => l.message));
+    };
+
+    fetchLogs();
+
+    // Realtime subscription for logs
+    const logsSubscription = supabase
       .channel('public:logs')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'logs' }, payload => {
-        setLogs(prev => [...prev, (payload.new as {message: string}).message]);
+        setLogs(prev => [...prev, (payload.new as { message: string }).message]);
       })
-      .subscribe((status, err) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('Connected to Supabase realtime!');
-        }
-        if (status === 'CHANNEL_ERROR' || err) {
-            setError(`Realtime connection error: ${err?.message}`);
-        }
-      });
-    
+      .subscribe();
+
+    // Optional: subscribe to Pi status changes if you have a pi_status table
+    const piSubscription = supabase
+      .channel('public:pi_status')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pi_status' }, payload => {
+        const status = (payload.new as { connected: boolean }).connected;
+        setPiConnected(status);
+      })
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(subscription);
+      supabase.removeChannel(logsSubscription);
+      supabase.removeChannel(piSubscription);
     };
   }, []);
 
   React.useEffect(() => {
-    // Auto-scroll to bottom
+    // Auto-scroll to bottom whenever logs update
     if (scrollAreaRef.current) {
-        const viewport = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
-        if (viewport) {
-            viewport.scrollTop = viewport.scrollHeight;
-        }
+      const viewport = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
     }
   }, [logs]);
 
@@ -74,15 +75,26 @@ export default function RealtimeLogsPage() {
       <AppSidebar />
       <main className="flex-1 md:pl-[--sidebar-width-icon] lg:pl-[--sidebar-width]">
         <div className="p-4 sm:p-6 lg:p-8">
-          <header className="mb-8">
+          <header className="mb-8 flex items-center justify-between">
             <div className="flex items-center gap-4">
               <SidebarTrigger className="lg:hidden" />
-              <h1 className="text-3xl font-bold font-headline">Real-time Pi Logs</h1>
+              <h1 className="text-3xl font-bold font-headline">Realtime Pi Logs</h1>
             </div>
-            <p className="text-muted-foreground mt-2">
-              Live event stream from the fingerprint scanner hardware.
-            </p>
+            <div className="flex items-center gap-2 text-sm">
+              {piConnected ? (
+                <>
+                  <Wifi className="h-5 w-5 text-green-500" />
+                  <span className="text-muted-foreground">Pi Connected</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-5 w-5 text-destructive" />
+                  <span className="text-muted-foreground">Pi Disconnected</span>
+                </>
+              )}
+            </div>
           </header>
+
           <Card>
             <CardHeader>
               <CardTitle className="font-headline">Log Stream</CardTitle>
@@ -97,14 +109,14 @@ export default function RealtimeLogsPage() {
                 </Alert>
               ) : (
                 <ScrollArea className="h-96 w-full rounded-md border bg-muted" ref={scrollAreaRef}>
-                   <div className="p-4 font-mono text-sm">
+                  <div className="p-4 font-mono text-sm">
                     {logs.map((log, i) => (
-                        <div key={i} className="flex gap-2">
-                           <span className="text-muted-foreground">{i + 1}</span> 
-                           <span>{log}</span>
-                        </div>
+                      <div key={i} className="flex gap-2">
+                        <span className="text-muted-foreground">{i + 1}.</span>
+                        <span>{log}</span>
+                      </div>
                     ))}
-                    </div>
+                  </div>
                 </ScrollArea>
               )}
             </CardContent>
